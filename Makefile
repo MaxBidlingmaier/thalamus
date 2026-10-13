@@ -49,6 +49,7 @@ go-test: ## Run Go tests.
 
 .PHONY: helm-unittest
 helm-unittest: ## Run Helm unit tests for the thalamus chart.
+# TODO: use OCI installation and add --verify=false for Helm4
 	@set -e; \
 	if ! helm plugin list | grep -q "^unittest"; then \
 		helm plugin install https://github.com/helm-unittest/helm-unittest.git --version $(HELM_UNITTEST_VERSION); \

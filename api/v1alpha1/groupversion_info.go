@@ -36,9 +36,3 @@ func (b *schemeBuilder) Register(object ...runtime.Object) {
 		return nil
 	})
 }
-
-// Build returns a new Scheme containing all registered types.
-func (b *schemeBuilder) Build() (*runtime.Scheme, error) {
-	s := runtime.NewScheme()
-	return s, b.AddToScheme(s)
-}

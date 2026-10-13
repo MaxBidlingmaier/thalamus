@@ -5,6 +5,7 @@ package operator
 
 import (
 	"context"
+	"fmt"
 
 	"k8s.io/apimachinery/pkg/runtime"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -43,12 +44,12 @@ func (r *ModelListReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 
 	var modelList v1alpha1.ModelList
 	if err := r.List(ctx, &modelList, client.InNamespace(req.Namespace)); err != nil {
-		return ctrl.Result{}, err
+		return ctrl.Result{}, fmt.Errorf("list models in namespace %s: %w", req.Namespace, err)
 	}
 
 	body, err := native.BuildModelListResponse(modelList.Items)
 	if err != nil {
-		return ctrl.Result{}, err
+		return ctrl.Result{}, fmt.Errorf("build model-list response: %w", err)
 	}
 
 	if err := applyOwnedNonBlocking(ctx, r.Client, r.Scheme, gateway, native.BuildModelListRoute(gateway, r.ListenerName)); err != nil {
