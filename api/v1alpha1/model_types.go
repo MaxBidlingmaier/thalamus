@@ -93,66 +93,25 @@ type WeightsSpec struct {
 	HF *HFWeightsSpec `json:"hf,omitempty"`
 }
 
-// EngineSpec configures the inference engine instance.
-type EngineSpec struct {
-	// Image is the container image for the inference engine.
-	Image string `json:"image"`
-
-	// Args are passed directly to the inference engine as CLI arguments.
-	// +kubebuilder:validation:Optional
-	Args []string `json:"args,omitempty"`
-
-	// Env defines environment variables for the inference engine container.
-	// +kubebuilder:validation:Optional
-	Env []corev1.EnvVar `json:"env,omitempty"`
-
-	// Resources defines the compute resources required by the inference engine.
-	// +kubebuilder:validation:Optional
-	Resources *corev1.ResourceRequirements `json:"resources,omitempty"`
-
-	// Cache defines the volume source for the engine cache directory (/cache).
-	// Defaults to an emptyDir. Accepts any Kubernetes volume source.
-	// +kubebuilder:validation:Optional
-	Cache *corev1.VolumeSource `json:"cache,omitempty"`
-}
-
-// EPPSpec configures the Endpoint Picker Proxy (EPP).
-type EPPSpec struct {
-	// Image is the container image for the EPP.
-	Image string `json:"image"`
-
-	// Args are passed directly to the EPP as CLI arguments.
-	// +kubebuilder:validation:Optional
-	Args []string `json:"args,omitempty"`
-
-	// Env defines environment variables for the EPP container.
-	// +kubebuilder:validation:Optional
-	Env []corev1.EnvVar `json:"env,omitempty"`
-
-	// Resources defines the compute resources required by the EPP.
-	// +kubebuilder:validation:Optional
-	Resources *corev1.ResourceRequirements `json:"resources,omitempty"`
-}
-
 // ServingSpec defines the serving configuration for the model instance.
 type ServingSpec struct {
-	// Engine configures the inference engine container.
-	Engine EngineSpec `json:"engine"`
+	// Engine is the pod spec for the inference engine. The container named
+	// 'engine' is the main container and must set an image. Containers with
+	// other names are added as sidecars.
+	Engine corev1.PodSpec `json:"engine"`
 
-	// EPP configures the optional Endpoint Picker Proxy.
-	// +kubebuilder:validation:Optional
-	EPP *EPPSpec `json:"epp,omitempty"`
-}
-
-// SchedulingSpec defines scheduling constraints for the model's pods.
-type SchedulingSpec struct {
-	// NodeSelector constrains the nodes onto which the model's pods may be scheduled.
-	// +kubebuilder:validation:Optional
-	NodeSelector map[string]string `json:"nodeSelector,omitempty"`
+	// Router is the pod spec for the entry point. The container named
+	// 'router' is the main container and must set an image. Containers with
+	// other names are added as sidecars.
+	Router corev1.PodSpec `json:"router"`
 }
 
 // ModelSpec defines the configuration for the model instance.
-// +kubebuilder:validation:XValidation:rule="self.backend != 'native' || has(self.serving.epp)",message="spec.serving.epp is required when backend is native"
+// +kubebuilder:validation:XValidation:rule="self.backend == 'native'",message="spec.backend must be native"
+// +kubebuilder:validation:XValidation:rule="self.serving.engine.containers.exists(c, c.name == 'engine' && c.image.size() > 0)",message="spec.serving.engine.containers requires a container named 'engine' with an image"
+// +kubebuilder:validation:XValidation:rule="self.serving.router.containers.exists(c, c.name == 'router' && c.image.size() > 0)",message="spec.serving.router.containers requires a container named 'router' with an image"
+// +kubebuilder:validation:XValidation:rule="!has(self.serving.engine.restartPolicy) || self.serving.engine.restartPolicy == 'Always'",message="spec.serving.engine.restartPolicy must be 'Always' (Deployments do not support other policies)"
+// +kubebuilder:validation:XValidation:rule="!has(self.serving.router.restartPolicy) || self.serving.router.restartPolicy == 'Always'",message="spec.serving.router.restartPolicy must be 'Always' (Deployments do not support other policies)"
 type ModelSpec struct {
 	// Backend selects which inference backend manages this model's resources.
 	// Defaults to "native".
@@ -172,10 +131,6 @@ type ModelSpec struct {
 
 	// Weights defines where the model weights are sourced from.
 	Weights WeightsSpec `json:"weights"`
-
-	// Scheduling defines scheduling constraints for the model's pods.
-	// +kubebuilder:validation:Optional
-	Scheduling *SchedulingSpec `json:"scheduling,omitempty"`
 }
 
 // ModelStatus defines the observed state of a Model.
@@ -238,19 +193,20 @@ func (m *Model) EPPName() string { return m.Name + "-epp" }
 
 // DetectedEngineType derives the engine type from the engine container image.
 func (m *Model) DetectedEngineType() EngineType {
-	if strings.Contains(m.Spec.Serving.Engine.Image, "vllm") {
-		return EngineTypeVLLM
+	for _, c := range m.Spec.Serving.Engine.Containers {
+		if c.Name == "engine" && strings.Contains(c.Image, "vllm") {
+			return EngineTypeVLLM
+		}
 	}
 	return EngineTypeUnknown
 }
 
 // DetectedEPPType derives the EPP type from the EPP container image.
 func (m *Model) DetectedEPPType() EPPType {
-	if m.Spec.Serving.EPP == nil {
-		return EPPTypeUnknown
-	}
-	if strings.Contains(m.Spec.Serving.EPP.Image, "llm-d") {
-		return EPPTypeLLMD
+	for _, c := range m.Spec.Serving.Router.Containers {
+		if c.Name == "router" && strings.Contains(c.Image, "llm-d") {
+			return EPPTypeLLMD
+		}
 	}
 	return EPPTypeUnknown
 }
