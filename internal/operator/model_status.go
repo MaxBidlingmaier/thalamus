@@ -9,6 +9,7 @@ import (
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	apiequality "k8s.io/apimachinery/pkg/api/equality"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
@@ -18,6 +19,7 @@ import (
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 
 	"github.com/cobaltcore-dev/thalamus/api/v1alpha1"
+	"github.com/cobaltcore-dev/thalamus/internal/operator/resources/native"
 )
 
 // syncNativeStatus derives and updates the ready state of a model by checking:
@@ -138,20 +140,7 @@ func (r *ModelReconciler) syncInferencePoolCondition(ctx context.Context, model 
 	allReady := true
 	var failedMessage string
 	for _, parent := range pool.Status.Parents {
-		pphase, pmessage := checkParentConditions(
-			parent.Conditions,
-			string(inferencev1.InferencePoolConditionAccepted),
-			string(inferencev1.InferencePoolConditionResolvedRefs),
-			func(condReason string) bool {
-				switch condReason {
-				case string(inferencev1.InferencePoolReasonNotRequested),
-					string(inferencev1.InferencePoolReasonHTTPRouteNotAccepted):
-					return true
-				}
-				return false
-			},
-			nil,
-		)
+		pphase, pmessage := checkParentConditions(parent.Conditions, pool.Generation, inferencePoolParentPolicy)
 		if pphase != v1alpha1.ModelPhaseReady {
 			allReady = false
 		}
@@ -182,6 +171,14 @@ func (r *ModelReconciler) syncHTTPRouteCondition(ctx context.Context, model *v1a
 		return false, fmt.Errorf("get http route %s/%s: %w", model.Namespace, model.EngineName(), err)
 	}
 
+	// The informer cache may still hold the route from before this apply.
+	desired := native.BuildHTTPRoute(model, r.GatewayName, r.ListenerName)
+	if !httpRouteServesDesiredMatches(route, desired) {
+		setModelStatus(model, v1alpha1.ModelPhaseCreating, v1alpha1.ModelReasonHTTPRouteNotAccepted,
+			fmt.Sprintf("HTTPRoute %s does not serve the current model names", model.EngineName()))
+		return false, nil
+	}
+
 	if len(route.Status.Parents) == 0 {
 		setModelStatus(model, v1alpha1.ModelPhaseCreating, v1alpha1.ModelReasonHTTPRouteNotAccepted, fmt.Sprintf("HTTPRoute %s has no parent status yet", model.EngineName()))
 		return false, nil
@@ -191,24 +188,16 @@ func (r *ModelReconciler) syncHTTPRouteCondition(ctx context.Context, model *v1a
 	var failedMessage string
 	partiallyInvalid := false
 	for _, parent := range route.Status.Parents {
-		pphase, pmessage := checkParentConditions(
-			parent.Conditions,
-			string(gatewayv1.RouteConditionAccepted),
-			string(gatewayv1.RouteConditionResolvedRefs),
-			func(condReason string) bool {
-				return condReason == string(gatewayv1.RouteReasonPending)
-			},
-			func(condReason string) bool {
-				return condReason == string(gatewayv1.RouteReasonBackendNotFound)
-			},
-		)
+		pphase, pmessage := checkParentConditions(parent.Conditions, route.Generation, httpRouteParentPolicy)
 		if pphase != v1alpha1.ModelPhaseReady {
 			allReady = false
 		}
 		if pphase == v1alpha1.ModelPhaseFailed {
 			failedMessage = pmessage
 		}
-		if cond := meta.FindStatusCondition(parent.Conditions, string(gatewayv1.RouteConditionPartiallyInvalid)); cond != nil && cond.Status == metav1.ConditionTrue {
+		partiallyInvalidCond := meta.FindStatusCondition(parent.Conditions, string(gatewayv1.RouteConditionPartiallyInvalid))
+		if partiallyInvalidCond != nil && partiallyInvalidCond.Status == metav1.ConditionTrue &&
+			partiallyInvalidCond.ObservedGeneration >= route.Generation {
 			partiallyInvalid = true
 		}
 	}
@@ -228,41 +217,81 @@ func (r *ModelReconciler) syncHTTPRouteCondition(ctx context.Context, model *v1a
 	return false, nil
 }
 
-// checkParentConditions evaluates the Accepted and ResolvedRefs conditions for a
-// single parent. It returns ModelPhaseReady only when the Accepted condition is
-// present and True and the ResolvedRefs condition is either absent or True.
-// ResolvedRefs=False is treated as ModelPhaseFailed unless the reason is known
-// to be transient. Accepted=False is treated as ModelPhaseCreating unless the
-// reason is known to be transient; otherwise it is ModelPhaseFailed.
+// httpRouteServesDesiredMatches reports whether route serves the desired
+// matches. Other fields are skipped because the API server defaults them.
+func httpRouteServesDesiredMatches(route, desired *gatewayv1.HTTPRoute) bool {
+	if len(route.Spec.Rules) != len(desired.Spec.Rules) {
+		return false
+	}
+	for i := range desired.Spec.Rules {
+		if !apiequality.Semantic.DeepEqual(route.Spec.Rules[i].Matches, desired.Spec.Rules[i].Matches) {
+			return false
+		}
+	}
+	return true
+}
+
+// parentStatusPolicy describes how a parent's conditions are interpreted.
+type parentStatusPolicy struct {
+	acceptedType string
+	resolvedType string
+	// transientReasons are reasons that mean "not ready yet" rather than
+	// "failed". Reason values are specific to their condition type.
+	transientReasons map[string]struct{}
+}
+
+var (
+	inferencePoolParentPolicy = parentStatusPolicy{
+		acceptedType: string(inferencev1.InferencePoolConditionAccepted),
+		resolvedType: string(inferencev1.InferencePoolConditionResolvedRefs),
+		transientReasons: map[string]struct{}{
+			string(inferencev1.InferencePoolReasonNotRequested):         {},
+			string(inferencev1.InferencePoolReasonHTTPRouteNotAccepted): {},
+		},
+	}
+	httpRouteParentPolicy = parentStatusPolicy{
+		acceptedType: string(gatewayv1.RouteConditionAccepted),
+		resolvedType: string(gatewayv1.RouteConditionResolvedRefs),
+		transientReasons: map[string]struct{}{
+			string(gatewayv1.RouteReasonPending):         {},
+			string(gatewayv1.RouteReasonBackendNotFound): {},
+		},
+	}
+)
+
+// checkParentConditions returns the model phase for one parent. Stale conditions
+// are pending. It is Ready only when the accepted condition is True and the
+// resolved condition is absent or True; a False condition is Failed unless its
+// reason is transient.
 func checkParentConditions(
 	conditions []metav1.Condition,
-	acceptedType, resolvedType string,
-	isTransientAcceptedReason func(string) bool,
-	isTransientResolvedReason func(string) bool,
+	generation int64,
+	policy parentStatusPolicy,
 ) (phase v1alpha1.ModelPhase, message string) {
 
-	acceptedCond := meta.FindStatusCondition(conditions, acceptedType)
-	resolvedCond := meta.FindStatusCondition(conditions, resolvedType)
+	acceptedCond := meta.FindStatusCondition(conditions, policy.acceptedType)
+	resolvedCond := meta.FindStatusCondition(conditions, policy.resolvedType)
 
-	if (acceptedCond != nil && acceptedCond.Status == metav1.ConditionTrue) &&
+	// Stale conditions may still report the previous spec as accepted.
+	for _, cond := range []*metav1.Condition{acceptedCond, resolvedCond} {
+		if cond != nil && cond.ObservedGeneration < generation {
+			return v1alpha1.ModelPhaseCreating, cond.Type + " condition is stale"
+		}
+	}
+
+	if acceptedCond != nil && acceptedCond.Status == metav1.ConditionTrue &&
 		(resolvedCond == nil || resolvedCond.Status == metav1.ConditionTrue) {
 		return v1alpha1.ModelPhaseReady, ""
 	}
 
-	if resolvedCond != nil && resolvedCond.Status == metav1.ConditionFalse {
-		msg := fmt.Sprintf("%s: %s", resolvedCond.Reason, resolvedCond.Message)
-		if isTransientResolvedReason != nil && isTransientResolvedReason(resolvedCond.Reason) {
-			return v1alpha1.ModelPhaseCreating, msg
+	for _, cond := range []*metav1.Condition{resolvedCond, acceptedCond} {
+		if cond != nil && cond.Status == metav1.ConditionFalse {
+			msg := fmt.Sprintf("%s: %s", cond.Reason, cond.Message)
+			if _, transient := policy.transientReasons[cond.Reason]; transient {
+				return v1alpha1.ModelPhaseCreating, msg
+			}
+			return v1alpha1.ModelPhaseFailed, msg
 		}
-		return v1alpha1.ModelPhaseFailed, msg
-	}
-
-	if acceptedCond != nil && acceptedCond.Status == metav1.ConditionFalse {
-		msg := fmt.Sprintf("%s: %s", acceptedCond.Reason, acceptedCond.Message)
-		if isTransientAcceptedReason(acceptedCond.Reason) {
-			return v1alpha1.ModelPhaseCreating, msg
-		}
-		return v1alpha1.ModelPhaseFailed, msg
 	}
 
 	return v1alpha1.ModelPhaseCreating, "parent status is pending"

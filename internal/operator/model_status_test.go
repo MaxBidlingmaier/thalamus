@@ -294,6 +294,28 @@ func TestReconcile_ModelStatus(t *testing.T) {
 			wantReason: v1alpha1.ModelReasonHTTPRoutePartiallyInvalid,
 		},
 		{
+			name: "ready when http route partially invalid condition is stale",
+			prepare: func(t *testing.T, c client.Client, m *v1alpha1.Model) {
+				markDeploymentReady(t, c, m.EngineName())
+				markDeploymentReady(t, c, m.EPPName())
+				markInferencePoolReady(t, c, m.EngineName())
+				setGeneration(t, c, m.EngineName(), &gatewayv1.HTTPRoute{}, 2)
+				markHTTPRouteParents(t, c, m.EngineName(),
+					gatewayv1.RouteParentStatus{
+						ParentRef:      gatewayv1.ParentReference{Name: gatewayv1.ObjectName("gw")},
+						ControllerName: "test-controller",
+						Conditions: []metav1.Condition{
+							{Type: string(gatewayv1.RouteConditionAccepted), Status: metav1.ConditionTrue, Reason: string(gatewayv1.RouteReasonAccepted), ObservedGeneration: 2},
+							{Type: string(gatewayv1.RouteConditionResolvedRefs), Status: metav1.ConditionTrue, Reason: string(gatewayv1.RouteReasonResolvedRefs), ObservedGeneration: 2},
+							{Type: string(gatewayv1.RouteConditionPartiallyInvalid), Status: metav1.ConditionTrue, Reason: string(gatewayv1.RouteReasonUnsupportedValue), ObservedGeneration: 1},
+						},
+					},
+				)
+			},
+			wantPhase:  v1alpha1.ModelPhaseReady,
+			wantReason: v1alpha1.ModelReasonReady,
+		},
+		{
 			name: "creating when http route backend not found",
 			prepare: func(t *testing.T, c client.Client, m *v1alpha1.Model) {
 				markDeploymentReady(t, c, m.EngineName())
@@ -385,6 +407,29 @@ func TestReconcile_ModelStatus(t *testing.T) {
 			wantReason: v1alpha1.ModelReasonHTTPRouteRejected,
 		},
 		{
+			name: "creating when inference pool acceptance is stale",
+			prepare: func(t *testing.T, c client.Client, m *v1alpha1.Model) {
+				markDeploymentReady(t, c, m.EngineName())
+				markDeploymentReady(t, c, m.EPPName())
+				setGeneration(t, c, m.EngineName(), &inferencev1.InferencePool{}, 2)
+				markInferencePoolReady(t, c, m.EngineName())
+			},
+			wantPhase:  v1alpha1.ModelPhaseCreating,
+			wantReason: v1alpha1.ModelReasonInferencePoolNotAccepted,
+		},
+		{
+			name: "creating when http route acceptance is stale",
+			prepare: func(t *testing.T, c client.Client, m *v1alpha1.Model) {
+				markDeploymentReady(t, c, m.EngineName())
+				markDeploymentReady(t, c, m.EPPName())
+				markInferencePoolReady(t, c, m.EngineName())
+				setGeneration(t, c, m.EngineName(), &gatewayv1.HTTPRoute{}, 2)
+				markHTTPRouteReady(t, c, m.EngineName())
+			},
+			wantPhase:  v1alpha1.ModelPhaseCreating,
+			wantReason: v1alpha1.ModelReasonHTTPRouteNotAccepted,
+		},
+		{
 			name: "creating when http route has one ready and one pending parent",
 			prepare: func(t *testing.T, c client.Client, m *v1alpha1.Model) {
 				markDeploymentReady(t, c, m.EngineName())
@@ -443,6 +488,36 @@ func TestReconcile_ModelStatus(t *testing.T) {
 				t.Errorf("Ready condition reason:\ngot:  %q\nwant: %q", cond.Reason, tc.wantReason)
 			}
 		})
+	}
+}
+
+// TestSyncHTTPRouteCondition_StaleMatches verifies that cached matches from an
+// older spec are not reported as ready. It calls the condition check directly
+// because reconcile re-applies the route.
+func TestSyncHTTPRouteCondition_StaleMatches(t *testing.T) {
+	model := testutil.NewModel("tiny-llm", testNamespace)
+	r, c := newTestReconciler(t, model)
+	reconcileModelOnce(t, r, "tiny-llm")
+	markHTTPRouteReady(t, c, model.EngineName())
+
+	route := &gatewayv1.HTTPRoute{}
+	testutil.MustGet(t, c, model.EngineName(), testNamespace, route)
+	route.Spec.Rules[0].Matches = route.Spec.Rules[0].Matches[:1]
+	if err := c.Update(context.Background(), route); err != nil {
+		t.Fatalf("update http route: %v", err)
+	}
+
+	testutil.MustGet(t, c, "tiny-llm", testNamespace, model)
+	ready, err := r.syncHTTPRouteCondition(context.Background(), model)
+	if err != nil {
+		t.Fatalf("sync http route condition: %v", err)
+	}
+	if ready {
+		t.Fatal("expected a route with stale matches to be not ready")
+	}
+	cond := meta.FindStatusCondition(model.Status.Conditions, v1alpha1.ModelConditionReady)
+	if cond == nil || cond.Reason != string(v1alpha1.ModelReasonHTTPRouteNotAccepted) {
+		t.Errorf("Ready condition: %+v, want reason %q", cond, v1alpha1.ModelReasonHTTPRouteNotAccepted)
 	}
 }
 
@@ -544,6 +619,16 @@ func markInferencePoolParents(t *testing.T, c client.Client, name string, parent
 	pool.Status.Parents = parents
 	if err := c.Status().Update(context.Background(), pool); err != nil {
 		t.Fatalf("update inference pool status: %v", err)
+	}
+}
+
+// setGeneration simulates a spec update the status writer has not observed.
+func setGeneration(t *testing.T, c client.Client, name string, obj client.Object, generation int64) {
+	t.Helper()
+	testutil.MustGet(t, c, name, testNamespace, obj)
+	obj.SetGeneration(generation)
+	if err := c.Update(context.Background(), obj); err != nil {
+		t.Fatalf("update %T %s: %v", obj, name, err)
 	}
 }
 
