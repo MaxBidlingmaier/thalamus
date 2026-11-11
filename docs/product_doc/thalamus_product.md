@@ -259,3 +259,4 @@ Platform operators can make Thalamus model availability and relevant deployment 
 Thalamus includes a serving backend delivered and maintained by the Thalamus team, enabling operators to deploy and serve models without obtaining a separately maintained backend integration. The team owns its integration, compatibility, testing, and maintenance; underlying inference engines and other upstream components remain the responsibility of their respective projects.
 
 **Status:** Confirmed need. **Scenarios:** 1–4, with local serving managed by each deployment owner. **Sources:** [Backend responsibility](#relationship-to-inference-engines-and-serving-platforms), [product responsibilities](#what-thalamus-provides), and the explicit requirement agreed in this product discussion. **Open questions:** Which models and hardware configurations must the included backend support, and what compatibility and maintenance guarantees apply?
+
