@@ -8,7 +8,9 @@
 
 Thalamus exists to enable organizations to offer and consume large language model (LLM) inference as a service within an infrastructure and security perimeter they control. Its intended purpose is to make sovereign, self-hosted inference practical without requiring each application team to assemble and operate its own model-serving stack.
 
-The product addresses two connected problems: organizations need control over model weights, prompts, and context, and they need a manageable way to turn available models and compute capacity into an inference service. This is particularly relevant to regulated, public-sector, and proprietary-data workloads for which externally hosted AI services may be unsuitable.
+Thalamus helps organizations control model artifacts and inference deployment, including isolation of serving workloads. It automates model lifecycle, request routing, and serving capacity. This turns models and compute resources into a manageable inference service within an organization-controlled perimeter.
+
+Thalamus does not create or manage application prompts and context. Its responsibility is to route inference requests to permitted deployments and integrate with the backend and platform controls that protect data during inference.
 
 ### Intended value
 
@@ -29,9 +31,9 @@ The related projects occupy different, partly overlapping roles:
 - **vLLM** is an inference engine and model server. It executes models and handles inference requests. Thalamus adds service-level model management and exposure around engines rather than replacing their execution logic.
 - **llm-d** is a Kubernetes-native distributed inference serving stack. It focuses on serving models efficiently at scale, including inference-aware routing and distributed execution. Thalamus uses such capabilities as building blocks for its model-management and shared-service experience.
 - **NVIDIA Dynamo** is a distributed inference framework that coordinates inference engines, routing, cache reuse, and scaling. Its intended relationship to Thalamus is as a possible serving backend, not an engine that Thalamus must reproduce.
-- **KServe** is a Kubernetes model-serving platform for predictive and generative AI. **KAITO** is a Kubernetes operator suite that automates model deployment and related AI workloads. Both already address parts of model lifecycle and serving, so the distinction is not simply that Thalamus provides orchestration and they do not. Thalamus aims to offer a common management and inference-service interface across backend choices, with sovereignty and platform integration as guiding product concerns.
+- **KServe** is a Kubernetes model-serving platform for predictive and generative AI. **KAITO** is a Kubernetes operator suite that automates model deployment and related AI workloads. Thalamus aims to offer a common management and inference-service interface across backend choices, with sovereignty and platform integration as guiding product concerns.
 
-These technologies can therefore be complementary to Thalamus, although their responsibilities may overlap. The proposed value of adding Thalamus is consistency across backend choices and integration into a controlled inference service—not an assumption that the other projects lack compatible APIs, portability, or security features.
+These technologies can be complementary to Thalamus, although their responsibilities may overlap. Thalamus combines consistent model management and inference access with an included, project-maintained serving backend intended for independently operated, sovereign deployments across supported hardware vendors. Additional backend integrations offer choice without making an externally maintained serving platform mandatory. Sovereignty remains an end-to-end property of the deployment, not a guarantee of backend selection alone.
 
 Thalamus will provide an architecture that enables multiple serving backends, but the project itself will deliver and maintain only one included serving backend implementation. Additional backend implementations are the responsibility of their respective providers or contributors; support for each must be established separately.
 
@@ -75,8 +77,6 @@ Thalamus provides a consistent model-management and inference-service layer: man
 
 Thalamus will provide a packaging format that bundles models, their weights, and deployment parameters for distribution and lifecycle management in air-gapped deployments and remote satellite scenarios.
 
-Thalamus integrates with surrounding platform services rather than replacing them. Its responsibility includes exposing inference-specific operational information and applying the agreed service-level access and consumption policies, whether directly or through integrated components.
-
 ### What the surrounding platform provides
 
 The deployment platform supplies and operates the general-purpose infrastructure and services on which Thalamus depends. The following boundaries describe responsibilities without prescribing particular vendors or products.
@@ -101,6 +101,8 @@ Thalamus does not provide or operate a general-purpose Kubernetes platform, impl
 Thalamus also does not independently guarantee regulatory compliance, sovereign operation, or confidential processing. These properties depend on the complete deployment, including its infrastructure, artifacts, policies, and operational practices.
 
 Model training and application-level AI usage are out of scope. Thalamus does not itself perform model fine-tuning, but must enable model maintainers to use fine-tuned models and adjust deployment parameters through the selected backend. The availability of additional capabilities in an integrated backend does not automatically make them Thalamus capabilities.
+
+Thalamus does not provide application-level prompt construction, context management, content filtering, moderation, or response guardrails. Applications or separately integrated services remain responsible for these functions.
 
 ## Key scenarios
 
@@ -224,11 +226,11 @@ Platform operators can install and update Thalamus and its required serving comp
 
 **Status:** Confirmed need for standalone and disconnected operation; update procedures require review. **Scenarios:** 1–4. **Sources:** [Standalone scenarios](#key-scenarios), [website installation guide](../../website/getting-started.md), [stack-packaging intention](../../website/ipcei-cis-workshop-2026/ocm-packaging.md). **Open questions:** Which installation profiles, compatibility checks, update paths, and recovery procedures are required, and how do air-gapped and air-gated transfers differ?
 
-### CAP-14 — Backend extensibility and hardware choice
+### CAP-14 — Backend extensibility
 
-Backend providers can integrate independently maintained serving implementations into Thalamus's common model-management and inference-service architecture. Platform operators and model maintainers can choose supported backend and hardware combinations while understanding their capabilities and limitations. Additional backend implementations are maintained by their respective providers or contributors; the included, project-maintained backend is specified separately in CAP-19.
+Backend providers can integrate independently maintained serving implementations into Thalamus's common model-management and inference-service architecture. This allows operators to use a backend with required capabilities or an existing backend investment while retaining the common Thalamus interface.
 
-**Status:** Confirmed need for extensibility; breadth of hardware support is a documented intention. **Scenarios:** 1–4. **Sources:** [Backend responsibility](#relationship-to-inference-engines-and-serving-platforms), [provider architecture intentions](../../website/backend-hackathon-2026/index.md), [multi-vendor hardware](../../website/concepts/architecture.md#multi-vendor-hardware). **Open questions:** What is the minimum provider contract, how is compatibility demonstrated, and which hardware combinations are required rather than merely possible?
+**Status:** Confirmed need for extensibility. **Scenarios:** 1–4. **Sources:** [Backend responsibility](#relationship-to-inference-engines-and-serving-platforms), [provider architecture intentions](../../website/backend-hackathon-2026/index.md). **Open questions:** What is the minimum provider contract, how is compatibility demonstrated, and which concrete requirements justify additional backend integrations?
 
 ### CAP-15 — Data-perimeter and security-policy control
 
@@ -258,5 +260,10 @@ Platform operators can make Thalamus model availability and relevant deployment 
 
 Thalamus includes a serving backend delivered and maintained by the Thalamus team, enabling operators to deploy and serve models without obtaining a separately maintained backend integration. The team owns its integration, compatibility, testing, and maintenance; underlying inference engines and other upstream components remain the responsibility of their respective projects.
 
-**Status:** Confirmed need. **Scenarios:** 1–4, with local serving managed by each deployment owner. **Sources:** [Backend responsibility](#relationship-to-inference-engines-and-serving-platforms), [product responsibilities](#what-thalamus-provides), and the explicit requirement agreed in this product discussion. **Open questions:** Which models and hardware configurations must the included backend support, and what compatibility and maintenance guarantees apply?
+**Status:** Confirmed need. **Scenarios:** 1–4, with local serving managed by each deployment owner. **Sources:** [Backend responsibility](#relationship-to-inference-engines-and-serving-platforms), [product responsibilities](#what-thalamus-provides), and the explicit requirement agreed in this product discussion. **Open questions:** Which models must the included backend support, and what compatibility and maintenance guarantees apply?
 
+### CAP-20 — Hardware choice
+
+Platform operators and model maintainers can deploy inference workloads on supported accelerator hardware from multiple vendors, reducing dependence on a single hardware supplier. Supported combinations and their limitations are explicit; hardware portability does not imply identical performance or capabilities.
+
+**Status:** Documented intention. **Scenarios:** 1–4, with hardware selected by each deployment owner. **Sources:** [Vendor-neutral product purpose](#intended-value), [website multi-vendor hardware](../../website/concepts/architecture.md#multi-vendor-hardware). **Open questions:** Which hardware vendors and configurations are required, how are supported combinations validated, and which must be supported by the included backend versus additional integrations?
