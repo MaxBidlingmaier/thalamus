@@ -54,7 +54,7 @@ The following roles describe responsibilities and goals, not necessarily separat
 
 ### Inference user
 
-Discovers and invokes available models through an application, AI interface, or automated client. Needs understandable model information and reliable inference access without managing serving infrastructure. Permission to consume a model does not imply permission to change its deployment or to deploy other models.
+Discovers and invokes available models through an application, AI interface, or automated client. Needs understandable model information and reliable inference access. The inference API should be standard and client-agnostic.
 
 ### Model maintainer
 
